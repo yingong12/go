@@ -405,6 +405,7 @@ func closechan(c *hchan) {
 	var glist gList
 
 	// release all readers
+	//*所有reader加入待唤醒list
 	for {
 		sg := c.recvq.dequeue()
 		if sg == nil {
@@ -427,6 +428,7 @@ func closechan(c *hchan) {
 	}
 
 	// release all writers (they will panic)
+	//*所有writer加入待唤醒list
 	for {
 		sg := c.sendq.dequeue()
 		if sg == nil {
@@ -447,7 +449,7 @@ func closechan(c *hchan) {
 	unlock(&c.lock)
 
 	// Ready all Gs now that we've dropped the channel lock.
-	//* 唤醒所有sndr 和rcvr。  sndr会panic
+	//*唤醒所有待唤醒队列里的g
 	for !glist.empty() {
 		gp := glist.pop()
 		gp.schedlink = 0
