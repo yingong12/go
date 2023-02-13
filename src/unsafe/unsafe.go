@@ -25,7 +25,7 @@ type IntegerType int
 //	- A uintptr can be converted to a Pointer.
 //	- A Pointer can be converted to a uintptr.
 // Pointer therefore allows a program to defeat the type system and read and write
-// arbitrary memory. It should be used with extreme care.
+// arbitrary memory. It should be used with extreme care.  直接操作内存， 越过type system
 //
 // The following patterns involving Pointer are valid.
 // Code not using these patterns is likely to be invalid today
@@ -36,6 +36,7 @@ type IntegerType int
 // but silence from "go vet" is not a guarantee that the code is valid.
 //
 // (1) Conversion of a *T1 to Pointer to *T2.
+// 1.类型转换， t1类型pointer到t2类型pointer
 //
 // Provided that T2 is no larger than T1 and that the two share an equivalent
 // memory layout, this conversion allows reinterpreting data of one type as

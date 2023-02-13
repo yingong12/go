@@ -20,6 +20,7 @@ import (
 //
 // A Pool is safe for use by multiple goroutines simultaneously.
 //
+// Pool 可重用对象，减轻gc压力。 但不适用于所有场景
 // Pool's purpose is to cache allocated but unused items for later reuse,
 // relieving pressure on the garbage collector. That is, it makes it easy to
 // build efficient, thread-safe free lists. However, it is not suitable for all
@@ -99,12 +100,15 @@ func (p *Pool) Put(x any) {
 		race.ReleaseMerge(poolRaceAddr(x))
 		race.Disable()
 	}
+	//why pin? 不pin会有什么问题
 	l, _ := p.pin()
 	if l.private == nil {
 		l.private = x
 		x = nil
 	}
+	//为啥这里又要检测一次x？
 	if x != nil {
+		//双端链表
 		l.shared.pushHead(x)
 	}
 	runtime_procUnpin()
@@ -193,7 +197,8 @@ func (p *Pool) getSlow(pid int) any {
 // returns poolLocal pool for the P and the P's id.
 // Caller must call runtime_procUnpin() when done with the pool.
 func (p *Pool) pin() (*poolLocal, int) {
-	pid := runtime_procPin()
+	//pin住，防止interupt， hold住cpu！
+	pid := runtime_rocPin()
 	// In pinSlow we store to local and then to localSize, here we load in opposite order.
 	// Since we've disabled preemption, GC cannot happen in between.
 	// Thus here we must observe local at least as large localSize.

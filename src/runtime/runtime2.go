@@ -402,6 +402,7 @@ type heldLockInfo struct {
 	rank     lockRank
 }
 
+//* G in GMP
 type g struct {
 	// Stack parameters.
 	// stack describes the actual stack memory: [stack.lo, stack.hi).
