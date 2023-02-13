@@ -31,16 +31,16 @@ const (
 )
 
 type hchan struct {
-	qcount   uint           // total data in the queue
-	dataqsiz uint           // size of the circular queue
-	buf      unsafe.Pointer // points to an array of dataqsiz elements
-	elemsize uint16
-	closed   uint32
-	elemtype *_type // element type
-	sendx    uint   // send index
-	recvx    uint   // receive index
-	recvq    waitq  // list of recv waiters
-	sendq    waitq  // list of send waiters
+	qcount   uint           // total data in the queue   缓冲buffer 双端队列里元素个数
+	dataqsiz uint           // size of the circular queue 双向队列cap
+	buf      unsafe.Pointer // points to an array of dataqsiz elements 	数组指针
+	elemsize uint16         //元素大小,用于计算下一个地址
+	closed   uint32         //channel 是否closed
+	elemtype *_type         // element type
+	sendx    uint           // send index 双端队列sendx
+	recvx    uint           // receive index  接受index
+	recvq    waitq          // list of recv waiters 等待的g队列
+	sendq    waitq          // list of send waiters
 
 	// lock protects all fields in hchan, as well as several
 	// fields in sudogs blocked on this channel.
@@ -48,7 +48,7 @@ type hchan struct {
 	// Do not change another G's status while holding this lock
 	// (in particular, do not ready a G), as this can deadlock
 	// with stack shrinking.
-	lock mutex
+	lock mutex //基本每个操作都加锁
 }
 
 type waitq struct {
@@ -204,7 +204,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 		unlock(&c.lock)
 		panic(plainError("send on closed channel"))
 	}
-
+	//dequeue() 双端队列，存的等待的goroutines
 	if sg := c.recvq.dequeue(); sg != nil {
 		// Found a waiting receiver. We pass the value we want to send
 		// directly to the receiver, bypassing the channel buffer (if any).
@@ -212,6 +212,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 		return true
 	}
 
+	//buffer  qcount为当前元素个数。
 	if c.qcount < c.dataqsiz {
 		// Space is available in the channel buffer. Enqueue the element to send.
 		qp := chanbuf(c, c.sendx)
@@ -227,7 +228,8 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 		unlock(&c.lock)
 		return true
 	}
-
+	//非阻塞 select的时候且带default
+	//send 的时候也可以select
 	if !block {
 		unlock(&c.lock)
 		return false
@@ -242,6 +244,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	}
 	// No stack splits between assigning elem and enqueuing mysg
 	// on gp.waiting where copystack can find it.
+	//当前的g包sudug
 	mysg.elem = ep
 	mysg.waitlink = nil
 	mysg.g = gp
@@ -255,11 +258,15 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	// changes and when we set gp.activeStackChans is not safe for
 	// stack shrinking.
 	atomic.Store8(&gp.parkingOnChan, 1)
+	//和系统调用还不一样
+	//放另一个g进来
+	//g执行的代码
 	gopark(chanparkcommit, unsafe.Pointer(&c.lock), waitReasonChanSend, traceEvGoBlockSend, 2)
 	// Ensure the value being sent is kept alive until the
 	// receiver copies it out. The sudog has a pointer to the
 	// stack object, but sudogs aren't considered as roots of the
 	// stack tracer.
+	//避免gc回收ep,为什么这里需要，而不是park前
 	KeepAlive(ep)
 
 	// someone woke us up.
@@ -308,6 +315,7 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 		}
 	}
 	if sg.elem != nil {
+		//发送
 		sendDirect(c.elemtype, sg, ep)
 		sg.elem = nil
 	}
@@ -318,6 +326,7 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 	if sg.releasetime != 0 {
 		sg.releasetime = cputicks()
 	}
+	//state 置为ready
 	goready(gp, skip+1)
 }
 

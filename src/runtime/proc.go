@@ -2523,6 +2523,7 @@ func execute(gp *g, inheritTime bool) {
 // Finds a runnable goroutine to execute.
 // Tries to steal from other P's, get g from local or global queue, poll network.
 func findrunnable() (gp *g, inheritTime bool) {
+	//local
 	_g_ := getg()
 
 	// The conditions here and in handoffp must agree: if
@@ -2596,6 +2597,7 @@ top:
 			atomic.Xadd(&sched.nmspinning, 1)
 		}
 
+		//steal from others
 		gp, inheritTime, tnow, w, newWork := stealWork(now)
 		now = tnow
 		if gp != nil {
@@ -2664,6 +2666,7 @@ top:
 		goto top
 	}
 	if sched.runqsize != 0 {
+		//global拿
 		gp := globrunqget(_p_, 0)
 		unlock(&sched.lock)
 		return gp, false
@@ -2832,6 +2835,7 @@ func pollWork() bool {
 //
 // If now is not 0 it is the current time. stealWork returns the passed time or
 // the current time if now was passed as 0.
+//偷work
 func stealWork(now int64) (gp *g, inheritTime bool, rnow, pollUntil int64, newWork bool) {
 	pp := getg().m.p.ptr()
 

@@ -110,6 +110,10 @@ type Addr interface {
 // Conn is a generic stream-oriented network connection.
 //
 // Multiple goroutines may invoke methods on a Conn simultaneously.
+/*
+ 连接对象
+ 实现read，write，close  所以是ReaderWriterCloser
+*/
 type Conn interface {
 	// Read reads data from the connection.
 	// Read can be made to time out and return an error after a fixed
@@ -175,6 +179,7 @@ func (c *conn) ok() bool { return c != nil && c.fd != nil }
 
 // Implementation of the Conn interface.
 
+//直接读， 并没有连接池的概念
 // Read implements the Conn Read method.
 func (c *conn) Read(b []byte) (int, error) {
 	if !c.ok() {

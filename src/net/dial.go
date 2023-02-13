@@ -622,7 +622,9 @@ type ListenConfig struct {
 //
 // See func Listen for a description of the network and address
 // parameters.
+// 又是返回interface 同理， 不关心你内部实现， 只要你能提供给我固定的方法
 func (lc *ListenConfig) Listen(ctx context.Context, network, address string) (Listener, error) {
+	//parse 各个协议地址， 包括tcp, unixgram(socket) 等等
 	addrs, err := DefaultResolver.resolveAddrList(ctx, "listen", network, address, nil)
 	if err != nil {
 		return nil, &OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
@@ -635,6 +637,7 @@ func (lc *ListenConfig) Listen(ctx context.Context, network, address string) (Li
 	var l Listener
 	la := addrs.first(isIPv4)
 	switch la := la.(type) {
+
 	case *TCPAddr:
 		l, err = sl.listenTCP(ctx, la)
 	case *UnixAddr:

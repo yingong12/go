@@ -411,6 +411,7 @@ func (c *cancelCtx) cancel(removeFromParent bool, err error) {
 	d, _ := c.done.Load().(chan struct{})
 	if d == nil {
 		//没有监听者，通用关闭通道。 此时任何接收者都会监听到这个closed chan而直接退出阻塞
+		//这里应该要拷贝一份channel，不然可能会存在关闭closedChan，所有ctx都cancel了。
 		c.done.Store(closedchan)
 	} else {
 		//关闭channel， context canceled。 此时所有Done的接收者都可以unblock了。

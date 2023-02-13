@@ -134,6 +134,7 @@ func favoriteAddrFamily(network string, laddr, raddr sockaddr, mode string) (fam
 	return syscall.AF_INET6, false
 }
 
+//打开socket
 func internetSocket(ctx context.Context, net string, laddr, raddr sockaddr, sotype, proto int, mode string, ctrlFn func(string, string, syscall.RawConn) error) (fd *netFD, err error) {
 	if (runtime.GOOS == "aix" || runtime.GOOS == "windows" || runtime.GOOS == "openbsd") && mode == "dial" && raddr.isWildcard() {
 		raddr = raddr.toLocal(net)

@@ -300,7 +300,6 @@ func getcallerpc() uintptr
 
 //go:noescape
 func getcallersp() uintptr // implemented as an intrinsic on all platforms
-
 // getclosureptr returns the pointer to the current closure.
 // getclosureptr can only be used in an assignment statement
 // at the entry of a function. Moreover, go:nosplit directive
