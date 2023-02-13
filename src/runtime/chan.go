@@ -11,8 +11,8 @@ package runtime
 //  except for the case of an unbuffered channel with a single goroutine
 //  blocked on it for both sending and receiving using a select statement,
 //  in which case the length of c.sendq and c.recvq is limited only by the
-//  size of the select statement.
-//
+//  size of the select statement.   1 > (1-b/n)*b
+//  语文a   数学b      total   > a*(total - a ) -> 1> a -  a^2/total
 // For buffered channels, also:
 //  c.qcount > 0 implies that c.recvq is empty.
 //  c.qcount < c.dataqsiz implies that c.sendq is empty.
@@ -31,16 +31,16 @@ const (
 )
 
 type hchan struct {
-	qcount   uint           // total data in the queue
-	dataqsiz uint           // size of the circular queue
-	buf      unsafe.Pointer // points to an array of dataqsiz elements
-	elemsize uint16
-	closed   uint32
-	elemtype *_type // element type
-	sendx    uint   // send index
-	recvx    uint   // receive index
-	recvq    waitq  // list of recv waiters
-	sendq    waitq  // list of send waiters
+	qcount   uint           // total data in the queue   //*缓冲buffer 双端队列里元素个数 len
+	dataqsiz uint           // size of the circular queue //*双向队列cap
+	buf      unsafe.Pointer // points to an array of dataqsiz elements 	//* buffer 数组指针
+	elemsize uint16         //*元素大小,用于计算下一个地址
+	closed   uint32         //*channel 是否closed
+	elemtype *_type         // element type
+	sendx    uint           //* send index 双端队列sendx
+	recvx    uint           //* receive index  接受index
+	recvq    waitq          //* list of recv waiters 等待的g队列
+	sendq    waitq          //* list of send waiters
 
 	// lock protects all fields in hchan, as well as several
 	// fields in sudogs blocked on this channel.
@@ -48,7 +48,7 @@ type hchan struct {
 	// Do not change another G's status while holding this lock
 	// (in particular, do not ready a G), as this can deadlock
 	// with stack shrinking.
-	lock mutex
+	lock mutex //*基本每个操作都加锁
 }
 
 type waitq struct {
@@ -69,6 +69,7 @@ func makechan64(t *chantype, size int64) *hchan {
 	return makechan(t, int(size))
 }
 
+// *新建channel。 新建chan，申请buffer(不管是否传入size， 如果没有size就返回一个大小的bufer)
 func makechan(t *chantype, size int) *hchan {
 	elem := t.elem
 
@@ -79,7 +80,7 @@ func makechan(t *chantype, size int) *hchan {
 	if hchanSize%maxAlign != 0 || elem.align > maxAlign {
 		throw("makechan: bad alignment")
 	}
-
+	//判断是否溢出
 	mem, overflow := math.MulUintptr(elem.size, uintptr(size))
 	if overflow || mem > maxAlloc-hchanSize || size < 0 {
 		panic(plainError("makechan: size out of range"))
@@ -104,6 +105,7 @@ func makechan(t *chantype, size int) *hchan {
 	default:
 		// Elements contain pointers.
 		c = new(hchan)
+		//*申请mem那么大的空间，拿来装elem  type. 类型为unsafe.Pointer
 		c.buf = mallocgc(mem, elem, true)
 	}
 
@@ -127,6 +129,7 @@ func chanbuf(c *hchan, i uint) unsafe.Pointer {
 // It uses a single word-sized read of mutable state, so although
 // the answer is instantaneously true, the correct answer may have changed
 // by the time the calling function receives the return value.
+// * 校验channel是否已满，导致阻塞
 func full(c *hchan) bool {
 	// c.dataqsiz is immutable (never written after the channel is created)
 	// so it is safe to read at any time during channel operation.
@@ -139,24 +142,30 @@ func full(c *hchan) bool {
 }
 
 // entry point for c <- x from compiled code
+//
 //go:nosplit
 func chansend1(c *hchan, elem unsafe.Pointer) {
 	chansend(c, elem, true, getcallerpc())
 }
 
 /*
- * generic single channel send/recv
- * If block is not nil,
- * then the protocol will not
- * sleep but return if it could
- * not complete.
- *
- * sleep can wake up with g.param == nil
- * when a channel involved in the sleep has
- * been closed.  it is easiest to loop and re-run
- * the operation; we'll see that it's now closed.
+* generic single channel send/recv
+* If block is not nil,
+* then the protocol will not
+* sleep but return if it could
+* not complete.
+*
+* sleep can wake up with g.param == nil
+* when a channel involved in the sleep has
+* been closed.  it is easiest to loop and re-run
+* the operation; we'll see that it's now closed.
+
+* @param c  channel结构体
+* @param ep  需要被send的对象指针
+* @param block 是否阻塞。 如果非阻塞会尝试发送，失败后立即退出
+* @param callerpc  调用者的 program counter
  */
-func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
+func chasend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	if c == nil {
 		if !block {
 			return false
@@ -189,6 +198,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	// channel wasn't closed during the first observation. However, nothing here
 	// guarantees forward progress. We rely on the side effects of lock release in
 	// chanrecv() and closechan() to update this thread's view of c.closed and full().
+	//*非阻塞&未关闭&满了. 非阻塞对应哪种情况？
 	if !block && c.closed == 0 && full(c) {
 		return false
 	}
@@ -197,29 +207,36 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	if blockprofilerate > 0 {
 		t0 = cputicks()
 	}
-
+	/* -----
+	发送数据逻辑
+	*/
+	//*加锁
 	lock(&c.lock)
-
+	//* send  to a closed channel -> panic
 	if c.closed != 0 {
 		unlock(&c.lock)
 		panic(plainError("send on closed channel"))
 	}
-
+	//dequeue() 双端队列，存的等待的goroutines
+	//* 当前有等待就先发出去，双端队列中取第一个。 内存拷贝然后唤醒他
 	if sg := c.recvq.dequeue(); sg != nil {
 		// Found a waiting receiver. We pass the value we want to send
 		// directly to the receiver, bypassing the channel buffer (if any).
 		send(c, sg, ep, func() { unlock(&c.lock) }, 3)
 		return true
 	}
-
+	//* 非阻塞且buffer放得下
+	//一定写得进去？
 	if c.qcount < c.dataqsiz {
 		// Space is available in the channel buffer. Enqueue the element to send.
 		qp := chanbuf(c, c.sendx)
 		if raceenabled {
 			racenotify(c, c.sendx, nil)
 		}
+		//拷贝到buffer
 		typedmemmove(c.elemtype, qp, ep)
 		c.sendx++
+		//写满了sendx归0
 		if c.sendx == c.dataqsiz {
 			c.sendx = 0
 		}
@@ -227,13 +244,14 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 		unlock(&c.lock)
 		return true
 	}
-
+	//*非阻塞 select的时候且带defaulth直接退出
 	if !block {
 		unlock(&c.lock)
 		return false
 	}
 
 	// Block on the channel. Some receiver will complete our operation for us.
+	//* 前面所有情况都不满足， 这个时候需要阻塞,直到能发出
 	gp := getg()
 	mysg := acquireSudog()
 	mysg.releasetime = 0
@@ -242,6 +260,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	}
 	// No stack splits between assigning elem and enqueuing mysg
 	// on gp.waiting where copystack can find it.
+	//当前的g包sudug
 	mysg.elem = ep
 	mysg.waitlink = nil
 	mysg.g = gp
@@ -249,20 +268,24 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	mysg.c = c
 	gp.waiting = mysg
 	gp.param = nil
+	//*当前g进入sendq然后park掉,等待close或者recv唤醒
 	c.sendq.enqueue(mysg)
 	// Signal to anyone trying to shrink our stack that we're about
 	// to park on a channel. The window between when this G's status
 	// changes and when we set gp.activeStackChans is not safe for
 	// stack shrinking.
 	atomic.Store8(&gp.parkingOnChan, 1)
+	//* 发送完后就阻塞这里。直到被唤醒。
+	//* park 该routine， 标记为waiting chan send
 	gopark(chanparkcommit, unsafe.Pointer(&c.lock), waitReasonChanSend, traceEvGoBlockSend, 2)
 	// Ensure the value being sent is kept alive until the
 	// receiver copies it out. The sudog has a pointer to the
 	// stack object, but sudogs aren't considered as roots of the
 	// stack tracer.
+	//*避免gc回收ep,为什么这里需要，而不是park前
 	KeepAlive(ep)
 
-	// someone woke us up.
+	//* someone woke us up.
 	if mysg != gp.waiting {
 		throw("G waiting list is corrupted")
 	}
@@ -290,6 +313,8 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 // Channel c must be empty and locked.  send unlocks c with unlockf.
 // sg must already be dequeued from c.
 // ep must be non-nil and point to the heap or the caller's stack.
+
+// send 内存拷贝给sg， 然后sg置为readyState 等待唤醒
 func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 	if raceenabled {
 		if c.dataqsiz == 0 {
@@ -308,7 +333,9 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 		}
 	}
 	if sg.elem != nil {
+		//* 发送，内存拷贝
 		sendDirect(c.elemtype, sg, ep)
+		//! 为什么要置为nil?
 		sg.elem = nil
 	}
 	gp := sg.g
@@ -318,6 +345,7 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 	if sg.releasetime != 0 {
 		sg.releasetime = cputicks()
 	}
+	//state 置为ready
 	goready(gp, skip+1)
 }
 
@@ -341,6 +369,7 @@ func sendDirect(t *_type, sg *sudog, src unsafe.Pointer) {
 	typeBitsBulkBarrier(t, uintptr(dst), uintptr(src), t.size)
 	// No need for cgo write barrier checks because dst is always
 	// Go memory.
+	//* 内存拷贝
 	memmove(dst, src, t.size)
 }
 
@@ -353,6 +382,7 @@ func recvDirect(t *_type, sg *sudog, dst unsafe.Pointer) {
 	memmove(dst, src, t.size)
 }
 
+// * 关闭channel
 func closechan(c *hchan) {
 	if c == nil {
 		panic(plainError("close of nil channel"))
@@ -369,7 +399,7 @@ func closechan(c *hchan) {
 		racewritepc(c.raceaddr(), callerpc, abi.FuncPCABIInternal(closechan))
 		racerelease(c.raceaddr())
 	}
-
+	//*标记closed
 	c.closed = 1
 
 	var glist gList
@@ -417,6 +447,7 @@ func closechan(c *hchan) {
 	unlock(&c.lock)
 
 	// Ready all Gs now that we've dropped the channel lock.
+	//* 唤醒所有sndr 和rcvr。  sndr会panic
 	for !glist.empty() {
 		gp := glist.pop()
 		gp.schedlink = 0
@@ -435,11 +466,15 @@ func empty(c *hchan) bool {
 }
 
 // entry points for <- c from compiled code
+// *  <- c 调用 接受函数
+//
 //go:nosplit
 func chanrecv1(c *hchan, elem unsafe.Pointer) {
 	chanrecv(c, elem, true)
 }
 
+// *   dt,ok:= <-c
+//
 //go:nosplit
 func chanrecv2(c *hchan, elem unsafe.Pointer) (received bool) {
 	_, received = chanrecv(c, elem, true)
@@ -507,7 +542,7 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 	}
 
 	lock(&c.lock)
-
+	//* 关闭了，且消费完了。
 	if c.closed != 0 && c.qcount == 0 {
 		if raceenabled {
 			raceacquire(c.raceaddr())
@@ -518,16 +553,17 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 		}
 		return true, false
 	}
-
+	//*sender 等待队列里有g
 	if sg := c.sendq.dequeue(); sg != nil {
 		// Found a waiting sender. If buffer is size 0, receive value
 		// directly from sender. Otherwise, receive from head of queue
 		// and add sender's value to the tail of the queue (both map to
 		// the same buffer slot because the queue is full).
+		//* 内存拷贝然后唤醒sg
 		recv(c, sg, ep, func() { unlock(&c.lock) }, 3)
 		return true, true
 	}
-
+	//* buffer里有东西
 	if c.qcount > 0 {
 		// Receive directly from queue
 		qp := chanbuf(c, c.recvx)
@@ -553,6 +589,7 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 	}
 
 	// no sender available: block on this channel.
+	//* 1. bufer里没东西 2.senderlist里没等待者 3. blocking   3者同时满足->block
 	gp := getg()
 	mysg := acquireSudog()
 	mysg.releasetime = 0
@@ -568,6 +605,7 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 	mysg.isSelect = false
 	mysg.c = c
 	gp.param = nil
+	//* 压入等待队列
 	c.recvq.enqueue(mysg)
 	// Signal to anyone trying to shrink our stack that we're about
 	// to park on a channel. The window between when this G's status
@@ -594,10 +632,11 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 
 // recv processes a receive operation on a full channel c.
 // There are 2 parts:
-// 1) The value sent by the sender sg is put into the channel
-//    and the sender is woken up to go on its merry way.
-// 2) The value received by the receiver (the current G) is
-//    written to ep.
+//  1. The value sent by the sender sg is put into the channel
+//     and the sender is woken up to go on its merry way.
+//  2. The value received by the receiver (the current G) is
+//     written to ep.
+//
 // For synchronous channels, both values are the same.
 // For asynchronous channels, the receiver gets its data from
 // the channel buffer and the sender's data is put in the
@@ -683,7 +722,6 @@ func chanparkcommit(gp *g, chanLock unsafe.Pointer) bool {
 //	} else {
 //		... bar
 //	}
-//
 func selectnbsend(c *hchan, elem unsafe.Pointer) (selected bool) {
 	return chansend(c, elem, false, getcallerpc())
 }
@@ -704,7 +742,6 @@ func selectnbsend(c *hchan, elem unsafe.Pointer) (selected bool) {
 //	} else {
 //		... bar
 //	}
-//
 func selectnbrecv(elem unsafe.Pointer, c *hchan) (selected, received bool) {
 	return chanrecv(c, elem, false)
 }

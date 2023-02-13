@@ -24,15 +24,15 @@ import (
 // contention compared to a Go map paired with a separate Mutex or RWMutex.
 //
 // The zero Map is empty and ready for use. A Map must not be copied after first use.
+// 写一次，读多次。
 type Map struct {
 	mu Mutex
-
 	// read contains the portion of the map's contents that are safe for
 	// concurrent access (with or without mu held).
 	//
 	// The read field itself is always safe to load, but must only be stored with
 	// mu held.
-	//
+	//read里存的entry 可能会并发更新。 但是如果更新之前删除过的entry需要将该entry移动到dirtymap加锁删除。
 	// Entries stored in read may be updated concurrently without mu, but updating
 	// a previously-expunged entry requires that the entry be copied to the dirty
 	// map and unexpunged with mu held.
@@ -41,7 +41,7 @@ type Map struct {
 	// dirty contains the portion of the map's contents that require mu to be
 	// held. To ensure that the dirty map can be promoted to the read map quickly,
 	// it also includes all of the non-expunged entries in the read map.
-	//
+	// dirty map包含read map的所有需要mu读取的contents和所有没删除的entry
 	// Expunged entries are not stored in the dirty map. An expunged entry in the
 	// clean map must be unexpunged and added to the dirty map before a new value
 	// can be stored to it.
@@ -61,8 +61,8 @@ type Map struct {
 
 // readOnly is an immutable struct stored atomically in the Map.read field.
 type readOnly struct {
-	m       map[any]*entry
-	amended bool // true if the dirty map contains some key not in m.
+	m       map[any]*entry // 底层的map
+	amended bool           // true if the dirty map contains some key not in m. 被修改过。 如果dirty里有这个key，ro里这个属性就是true。
 }
 
 // expunged is an arbitrary pointer that marks entries which have been deleted
@@ -70,6 +70,7 @@ type readOnly struct {
 var expunged = unsafe.Pointer(new(any))
 
 // An entry is a slot in the map corresponding to a particular key.
+// map里的数据key
 type entry struct {
 	// p points to the interface{} value stored for the entry.
 	//
@@ -90,7 +91,7 @@ type entry struct {
 	// p != expunged. If p == expunged, an entry's associated value can be updated
 	// only after first setting m.dirty[key] = e so that lookups using the dirty
 	// map find the entry.
-	p unsafe.Pointer // *interface{}
+	p unsafe.Pointer // *interface{} 存具体的数据
 }
 
 func newEntry(i any) *entry {
@@ -100,14 +101,20 @@ func newEntry(i any) *entry {
 // Load returns the value stored in the map for a key, or nil if no
 // value is present.
 // The ok result indicates whether value was found in the map.
+//load出ro， 从ro中读key， 如果ro中没有就加锁尝试从dirty里load到ro中
 func (m *Map) Load(key any) (value any, ok bool) {
+	//load 出来断言为readonly map (无锁)
 	read, _ := m.read.Load().(readOnly)
 	e, ok := read.m[key]
+	// 如果ro没有， 但是dirty map 有， 加锁，返回dirty里的值。
+	//TODO: 为什么是返回值而不是刷新ro？  因为这样其他人读到的就会莫得
+	//TODO: 这里没锁，可能会缓存失效。
 	if !ok && read.amended {
 		m.mu.Lock()
 		// Avoid reporting a spurious miss if m.dirty got promoted while we were
 		// blocked on m.mu. (If further loads of the same key will not miss, it's
 		// not worth copying the dirty map for this key.)
+		//TODO 为什么双层判断？
 		read, _ = m.read.Load().(readOnly)
 		e, ok = read.m[key]
 		if !ok && read.amended {
@@ -115,6 +122,7 @@ func (m *Map) Load(key any) (value any, ok bool) {
 			// Regardless of whether the entry was present, record a miss: this key
 			// will take the slow path until the dirty map is promoted to the read
 			// map.
+			//ammended置为false。 什么时候将数据写过来呢？
 			m.missLocked()
 		}
 		m.mu.Unlock()
@@ -125,37 +133,47 @@ func (m *Map) Load(key any) (value any, ok bool) {
 	return e.load()
 }
 
+//取出entry里的值
 func (e *entry) load() (value any, ok bool) {
 	p := atomic.LoadPointer(&e.p)
 	if p == nil || p == expunged {
 		return nil, false
 	}
+	//强转过后取值
 	return *(*any)(p), true
 }
 
 // Store sets the value for a key.
 func (m *Map) Store(key, value any) {
 	read, _ := m.read.Load().(readOnly)
+	//不断尝试原子更新，直到成功或者map dirty
 	if e, ok := read.m[key]; ok && e.tryStore(&value) {
 		return
 	}
-
+	//当前key如果不存在
+	//mutext 因为会涉及到ro entry的更新或dirty map的更新
 	m.mu.Lock()
 	read, _ = m.read.Load().(readOnly)
+	//ro 里面有 更新ro 然后dirty。  如果没有 更新dirty
+	//如果ro，dirty里都没得 更新dirty， 将ro置为ammended
 	if e, ok := read.m[key]; ok {
 		if e.unexpungeLocked() {
 			// The entry was previously expunged, which implies that there is a
 			// non-nil dirty map and this entry is not in it.
 			m.dirty[key] = e
 		}
+		//原子操作，更改ro里entry 所指向的value
 		e.storeLocked(&value)
 	} else if e, ok := m.dirty[key]; ok {
+		//如果dirty里面有，更新ro
 		e.storeLocked(&value)
 	} else {
+		//ro改为ammended。 更新dirty map
 		if !read.amended {
 			// We're adding the first new key to the dirty map.
 			// Make sure it is allocated and mark the read-only map as incomplete.
 			m.dirtyLocked()
+			//整体修改ro
 			m.read.Store(readOnly{m: read.m, amended: true})
 		}
 		m.dirty[key] = newEntry(value)
@@ -166,8 +184,9 @@ func (m *Map) Store(key, value any) {
 // tryStore stores a value if the entry has not been expunged.
 //
 // If the entry is expunged, tryStore returns false and leaves the entry
-// unchanged.
+// unchanged. 不断去重试加载val到entry里, 直到dirty了或者装成功了
 func (e *entry) tryStore(i *any) bool {
+	//TODO:为什么有个for循环
 	for {
 		p := atomic.LoadPointer(&e.p)
 		if p == expunged {
@@ -209,7 +228,9 @@ func (m *Map) LoadOrStore(key, value any) (actual any, loaded bool) {
 
 	m.mu.Lock()
 	read, _ = m.read.Load().(readOnly)
+	//ro里存在改key
 	if e, ok := read.m[key]; ok {
+		//
 		if e.unexpungeLocked() {
 			m.dirty[key] = e
 		}

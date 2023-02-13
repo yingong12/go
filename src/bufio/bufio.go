@@ -660,6 +660,7 @@ func (b *Writer) Buffered() int { return b.n }
 // If nn < len(p), it also returns an error explaining
 // why the write is short.
 func (b *Writer) Write(p []byte) (nn int, err error) {
+	//*buffer放不下了
 	for len(p) > b.Available() && b.err == nil {
 		var n int
 		if b.Buffered() == 0 {
@@ -667,6 +668,7 @@ func (b *Writer) Write(p []byte) (nn int, err error) {
 			// Write directly from p to avoid copy.
 			n, b.err = b.wr.Write(p)
 		} else {
+			//清空缓存,刷盘
 			n = copy(b.buf[b.n:], p)
 			b.n += n
 			b.Flush()
@@ -677,6 +679,7 @@ func (b *Writer) Write(p []byte) (nn int, err error) {
 	if b.err != nil {
 		return nn, b.err
 	}
+	//*写入buffer
 	n := copy(b.buf[b.n:], p)
 	b.n += n
 	nn += n

@@ -110,6 +110,7 @@ func TCPAddrFromAddrPort(addr netip.AddrPort) *TCPAddr {
 // TCPConn is an implementation of the Conn interface for TCP network
 // connections.
 type TCPConn struct {
+	//继承了conn
 	conn
 }
 

@@ -160,6 +160,7 @@ var Canceled = errors.New("context canceled")
 // deadline passes.
 var DeadlineExceeded error = deadlineExceededError{}
 
+//实现了Error() string 方法， 他就是error接口
 type deadlineExceededError struct{}
 
 func (deadlineExceededError) Error() string   { return "context deadline exceeded" }
@@ -246,6 +247,7 @@ func newCancelCtx(parent Context) cancelCtx {
 // goroutines counts the number of goroutines ever created; for testing.
 var goroutines int32
 
+//parent cancel的时候 儿子也cancel
 // propagateCancel arranges for child to be canceled when parent is.
 func propagateCancel(parent Context, child canceler) {
 	done := parent.Done()
@@ -263,6 +265,7 @@ func propagateCancel(parent Context, child canceler) {
 
 	if p, ok := parentCancelCtx(parent); ok {
 		p.mu.Lock()
+		//将儿子canceler 挂到父亲上
 		if p.err != nil {
 			// parent has already been canceled
 			child.cancel(false, p.err)
@@ -399,6 +402,7 @@ func (c *cancelCtx) cancel(removeFromParent bool, err error) {
 		panic("context: internal error: missing cancel error")
 	}
 	c.mu.Lock()
+	//已被cancel掉。 被其他routine 或者parent propergate掉
 	if c.err != nil {
 		c.mu.Unlock()
 		return // already canceled
@@ -406,12 +410,16 @@ func (c *cancelCtx) cancel(removeFromParent bool, err error) {
 	c.err = err
 	d, _ := c.done.Load().(chan struct{})
 	if d == nil {
+		//没有监听者，通用关闭通道。 此时任何接收者都会监听到这个closed chan而直接退出阻塞
+		//这里应该要拷贝一份channel，不然可能会存在关闭closedChan，所有ctx都cancel了。
 		c.done.Store(closedchan)
 	} else {
+		//关闭channel， context canceled。 此时所有Done的接收者都可以unblock了。
 		close(d)
 	}
 	for child := range c.children {
 		// NOTE: acquiring the child's lock while holding parent's lock.
+		//递归cancel chidren
 		child.cancel(false, err)
 	}
 	c.children = nil
@@ -431,6 +439,7 @@ func (c *cancelCtx) cancel(removeFromParent bool, err error) {
 //
 // Canceling this context releases resources associated with it, so code should
 // call cancel as soon as the operations running in this Context complete.
+//底层都是cancelCtx， 这个只是包了个timer
 func WithDeadline(parent Context, d time.Time) (Context, CancelFunc) {
 	if parent == nil {
 		panic("cannot create context from nil parent")
